@@ -1,8 +1,8 @@
 # PCA: EXP-1  SUM ARRAY GPU
-<h3>ENTER YOUR NAME</h3>
-<h3>ENTER YOUR REGISTER NO</h3>
-<h3>EX. NO</h3>
-<h3>DATE</h3>
+<h3>HARIRAM R</h3>
+<h3>212224240050</h3>
+<h3>EX. NO:1</h3>
+<h3>27-10-2026</h3>
 <h1> <align=center> SUM ARRAY ON HOST AND DEVICE </h3>
 PCA-GPU-based-vector-summation.-Explore-the-differences.
 i) Using the program sumArraysOnGPU-timer.cu, set the block.x = 1023. Recompile and run it. Compare the result with the execution configuration of block.x = 1024. Try to explain the difference and the reason.
@@ -29,10 +29,203 @@ Google Colab with NVCC Compiler
 6. Copy output data from the device to the host and verify the results against the host's sequential vector addition. Free memory on the host and the device.
 
 ## PROGRAM:
-TYPE YOUR CODE HERE
+```
+%%cuda
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <sys/time.h>
+#include <cuda_runtime.h>
+
+#ifndef _COMMON_H
+#define _COMMON_H
+
+#define CHECK(call)                                                        \
+{                                                                          \
+    const cudaError_t error = call;                                        \
+    if (error != cudaSuccess)                                              \
+    {                                                                      \
+        fprintf(stderr, "Error: %s:%d, ", __FILE__, __LINE__);             \
+        fprintf(stderr, "code: %d, reason: %s\n", error,                   \
+                cudaGetErrorString(error));                                \
+        exit(1);                                                           \
+    }                                                                      \
+}
+
+inline double seconds()
+{
+    struct timeval tp;
+    gettimeofday(&tp, NULL);
+    return ((double)tp.tv_sec + (double)tp.tv_usec * 1.e-6);
+}
+
+#endif // _COMMON_H
+
+// Check the results
+void checkResult(float *hostRef, float *gpuRef, const int N)
+{
+    double epsilon = 1.0E-5;
+    bool match = true;
+
+    for (int i = 0; i < N; i++)
+    {
+        if (abs(hostRef[i] - gpuRef[i]) > epsilon)
+        {
+            match = false;
+            printf("Arrays do not match!\n");
+            printf("host %5.2f gpu %5.2f at index %d\n",
+                   hostRef[i], gpuRef[i], i);
+            break;
+        }
+    }
+
+    if (match)
+        printf("Arrays match.\n\n");
+}
+
+// Initialize host data
+void initialData(float *ip, int size)
+{
+    srand((unsigned int)time(NULL));
+
+    for (int i = 0; i < size; i++)
+    {
+        ip[i] = (float)(rand() & 0xFF) / 10.0f;
+    }
+}
+
+// CPU vector addition
+void sumArraysOnHost(float *A, float *B, float *C, const int N)
+{
+    for (int idx = 0; idx < N; idx++)
+    {
+        C[idx] = A[idx] + B[idx];
+    }
+}
+
+// CUDA kernel for GPU vector addition
+__global__ void sumArraysOnGPU(float *A, float *B, float *C, int N)
+{
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < N)
+    {
+        C[idx] = A[idx] + B[idx];
+    }
+    
+}
+
+int main(int argc, char **argv)
+{
+    printf("%s Starting...\n", argv[0]);
+
+    // Set up the CUDA device
+    int dev = 0;
+    cudaDeviceProp deviceProp;
+
+    CHECK(cudaGetDeviceProperties(&deviceProp, dev));
+    printf("Using Device %d: %s\n", dev, deviceProp.name);
+    CHECK(cudaSetDevice(dev));
+
+    // Set vector size
+    int nElem = 1 << 24;
+    printf("Vector size %d\n", nElem);
+
+    size_t nBytes = (size_t)nElem * sizeof(float);
+
+    // Allocate host memory
+    float *h_A = (float *)malloc(nBytes);
+    float *h_B = (float *)malloc(nBytes);
+    float *hostRef = (float *)malloc(nBytes);
+    float *gpuRef = (float *)malloc(nBytes);
+
+    if (h_A == NULL || h_B == NULL ||
+        hostRef == NULL || gpuRef == NULL)
+    {
+        fprintf(stderr, "Host memory allocation failed!\n");
+        return EXIT_FAILURE;
+    }
+
+    double iStart, iElaps;
+
+    // Initialize host data
+    iStart = seconds();
+    initialData(h_A, nElem);
+    initialData(h_B, nElem);
+    iElaps = seconds() - iStart;
+
+    printf("initialData Time elapsed %f sec\n", iElaps);
+
+    memset(hostRef, 0, nBytes);
+    memset(gpuRef, 0, nBytes);
+
+    // Perform vector addition on CPU
+    iStart = seconds();
+    sumArraysOnHost(h_A, h_B, hostRef, nElem);
+    iElaps = seconds() - iStart;
+
+    printf("sumArraysOnHost Time elapsed %f sec\n", iElaps);
+
+    // Allocate device memory
+    float *d_A, *d_B, *d_C;
+
+    CHECK(cudaMalloc((void **)&d_A, nBytes));
+    CHECK(cudaMalloc((void **)&d_B, nBytes));
+    CHECK(cudaMalloc((void **)&d_C, nBytes));
+
+    // Copy input arrays from host to device
+    CHECK(cudaMemcpy(d_A, h_A, nBytes, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_B, h_B, nBytes, cudaMemcpyHostToDevice));
+
+    // Configure CUDA kernel execution
+    int iLen = 512;
+
+    dim3 block(iLen);
+    dim3 grid((nElem + block.x - 1) / block.x);
+
+    // Execute the GPU kernel
+    iStart = seconds();
+
+    sumArraysOnGPU<<<grid, block>>>(d_A, d_B, d_C, nElem);
+
+    // Check for kernel launch errors
+    CHECK(cudaGetLastError());
+
+    // Wait for the GPU kernel to finish
+    CHECK(cudaDeviceSynchronize());
+
+    iElaps = seconds() - iStart;
+
+    printf("sumArraysOnGPU <<< %d, %d >>> Time elapsed %f sec\n",
+           grid.x, block.x, iElaps);
+
+    // Copy the GPU result back to host
+    CHECK(cudaMemcpy(gpuRef, d_C, nBytes, cudaMemcpyDeviceToHost));
+
+    // Compare CPU and GPU results
+    checkResult(hostRef, gpuRef, nElem);
+
+    // Free device memory
+    CHECK(cudaFree(d_A));
+    CHECK(cudaFree(d_B));
+    CHECK(cudaFree(d_C));
+
+    // Free host memory
+    free(h_A);
+    free(h_B);
+    free(hostRef);
+    free(gpuRef);
+
+    return 0;
+}
+```
+
 
 ## OUTPUT:
-SHOW YOUR OUTPUT HERE
+<img width="1162" height="167" alt="image" src="https://github.com/user-attachments/assets/9055373d-ca0b-4fa9-9753-4dc7bd524917" />
+<img width="717" height="317" alt="image" src="https://github.com/user-attachments/assets/44e1953e-3dc8-48c9-9969-1ae273b9e299" />
+
 
 ## RESULT:
 Thus, Implementation of sum arrays on host and device is done in nvcc cuda using random number.
